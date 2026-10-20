@@ -1,0 +1,12 @@
+*/gcc -lto -pgo
+*/rust* rust-src rustfmt
+
+dev-debug/gdb multitarget
+dev-lang/ghc ghcbootstrap
+dev-util/perf tcmalloc
+dev-lang/ruby gmp jit
+dev-lang/swift libcxx
+dev-lang/swift-bootstrap -binary
+llvm-runtimes/libunwind -debug
+sys-apps/portage gentoo-dev
+

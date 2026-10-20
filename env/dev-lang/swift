@@ -1,0 +1,67 @@
+# ============================================================================
+# dev-lang/swift on Gentoo musl/llvm — libc++ 構成
+# ============================================================================
+# llvm プロファイルのシステム C++ ランタイムは libc++ なので、Swift もそこへ揃える。
+# 以前の libstdc++ 構成は /var/tmp/swift-libstdcxx-backup/env.swift に退避済み。
+
+# musl に無いものを補う
+#   _LARGEFILE64_SOURCE: lseek64 / off64_t / ino64_t (musl は _GNU_SOURCE では出さない)
+#   _GNU_SOURCE:         program_invocation_short_name, sighandler_t, lgammal_r 等
+CFLAGS="${CFLAGS} -D_LARGEFILE64_SOURCE -D_GNU_SOURCE"
+CXXFLAGS="${CXXFLAGS} -D_LARGEFILE64_SOURCE -D_GNU_SOURCE"
+
+# Swift のソースは musl を defined(__musl__) で判定する箇所が 5 ファイル 8 箇所ある
+# (llbuild の Subprocess.cpp / LocalExecutor.cpp、TSC の process.c、CoreFoundation の
+#  CFPlatform.c / CFUtilities.c、CrashHandlerLinux.cpp、LibcShims.h)。
+# しかし musl 自身は識別マクロを定義せず、__musl__ を定義するのは Swift の LLVM fork
+# だけ (clang/lib/Basic/Targets/OSTargets.h の Triple.isMusl())。上流 LLVM には無く、
+# 実測でも Gentoo の clang 21/22 も swift-5.10.1 同梱の clang 15 も定義しない。
+CFLAGS="${CFLAGS} -D__musl__=1"
+CXXFLAGS="${CXXFLAGS} -D__musl__=1"
+
+# USE=libcxx の分岐は -Wno-error=c2y-extensions を付けないが、下記 --host-cxx で
+# clang 22 を使うため必要になる (clang 22 は __COUNTER__ を C2Y 拡張として扱う)。
+CXXFLAGS="${CXXFLAGS} -Wno-error=c2y-extensions"
+
+# libc++ を明示する。Gentoo の clang 22 は /etc/clang/22/gentoo-stdlib.cfg で既定が
+# libc++ だが、ブートストラップ toolchain 同梱の clang は設定ファイルを持たないため
+# 既定が libstdc++ になる。SwiftCompilerSources などは CXXFLAGS を -Xcc として
+# ブートストラップの swiftc に渡すので、明示しないと C++ 側 (libc++) と食い違う。
+# libc++ は全体を inline namespace __1 に置くため、std を含むシグネチャのマングリングが
+# 変わり、リンクで露見する:
+#   undefined symbol: swift::SILPassManager::continueWithNextSubpassRun(std::optional<...>)
+#   undefined symbol: std::__cxx11::basic_string<...>::replace(...)
+# ブートストラップ (libstdc++ 版 swift-6.3.3) 同梱の clang は 21 なので、
+# libc++ 22 のヘッダ (clang 20 以降を要求) を扱える。
+CXXFLAGS="${CXXFLAGS} -stdlib=libc++"
+
+SWIFT_EXTRA_BUILD_FLAGS="
+	--skip-early-swift-driver
+	--toolchain-benchmarks=0
+	--host-cc=/usr/lib/llvm/22/bin/clang
+	--host-cxx=/usr/lib/llvm/22/bin/clang++
+"
+
+# --host-cc / --host-cxx:
+#   ebuild の src_compile はブートストラップ toolchain の bin を PATH 先頭に置くため、
+#   build-script が解決する clang++ が swift-5.10.1 同梱の clang 15 になる。libc++ 22 の
+#   ヘッダは clang 20 未満を明示的に拒否する:
+#     __configuration/compiler.h: warning "Libc++ only supports Clang 20 and later"
+#     __type_traits/aligned_storage.h: error: use of undeclared identifier '__builtin_clzg'
+#   ebuild が LLVM_SLOT>=22 向けに -Wno-error=c2y-extensions を足していることからも、
+#   本来は Gentoo の clang を使う想定と読める (PATH 順で潰れている)。
+#   実測で APInt.cpp と ASTContext.cpp が clang 22 + libc++ で警告なしに通ることを確認。
+#
+# --skip-early-swift-driver:
+#   swift 本体の install は early swift-driver を toolchain に置き、swift/swiftc を
+#   それへのリンクにする (SwiftUtils.cmake の swift_create_early_driver_copies)。
+#   early driver は *ホストの* Swift でビルドされるため RUNPATH がブートストラップを
+#   指すが、SwiftPM の bootstrap は LD_LIBRARY_PATH に新しいランタイムを入れる。
+#   これが RUNPATH より優先されるので起動できなくなる:
+#     Error relocating .../bin/swiftc: $s10Foundation11ProcessInfoC...: symbol not found
+#   作らなければ swiftc は swift-frontend (上流も swiftc-legacy-driver として残している
+#   C++ 実装) のままになり、新しいランタイムとだけ整合する。
+#
+# --toolchain-benchmarks=0:
+#   gentoo.ini が buildbot_linux を mixin しており、toolchain の成果物でない
+#   ベンチマークまで建てて失敗する (SwiftBench が生成されない)。

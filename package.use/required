@@ -1,0 +1,65 @@
+*/* RUBY_TARGETS: ruby40
+*/* PERL_FEATURES: ithreads
+
+# REQUIRED_USE
+dev-libs/libpcre -readline # at-most-one-of ( libedit readline )
+dev-libs/libpcre2 -readline # at-most-one-of ( libedit readline )
+net-firewall/nftables -readline # at-most-one-of ( libedit readline )
+media-gfx/imagemagick xml # svg? ( xml )
+media-libs/libcamera gui # sdl? ( gui )
+media-libs/libsdl2 gles2 # wayland? ( gles2 )
+
+# required by x11-misc/xdg-utils
+# required by kde-frameworks/kf-env
+# required by kde-frameworks/syntax-highlighting
+# required by gui-apps/vicinae::jaredallard
+app-text/xmlto text
+
+# required by net-libs/nodejs
+dev-cpp/simdutf atomic-base64
+
+# required by sys-kernel/cachyos-kernel::CachyOS-kernels[autofdo]
+# required by virtual/dist-kernel::CachyOS-kernels
+dev-util/perf libpfm
+
+# required by gnome-base/gvfs[google]
+# required by gnome-base/nautilus
+dev-libs/libgdata gnome-online-accounts
+
+# required by app-editors/neovim::gentoo
+dev-libs/libutf8proc -cjk
+
+# required by gui-apps/sddm-gentoo-config[weston]
+# required by x11-misc/sddm
+dev-libs/weston kiosk
+
+# required by dev-qt/qtvirtualkeyboard[sound]
+dev-qt/qtmultimedia qml
+
+# required by kde-frameworks/kio
+# required by kde-frameworks/kcmutils
+# required by kde-plasma/keditfiletype
+dev-qt/qtbase libproxy
+
+# required by kde-frameworks/kdnssd
+net-dns/avahi mdnsresponder-compat
+
+# required by net-fs/samba
+# required by net-fs/cifs-utils[acl]
+net-libs/ngtcp2 gnutls
+
+# required by sci-libs/onnxruntime::guru
+sci-ml/onnx disableStaticReg
+
+# required by app-benchmarks/kdiskmark
+sys-block/fio aio
+
+# required by virtual/minizip
+sys-libs/zlib minizip
+
+# required by app-containers/lxc[caps,tools]
+# required by app-containers/waydroid::guru
+sys-libs/libcap static-libs
+
+# required by sys-auth/bb-auth::isr
+dev-qt/qtbase test

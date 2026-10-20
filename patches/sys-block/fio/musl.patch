@@ -1,0 +1,7 @@
+--- a/oslib/linux-blkzoned.c
++++ b/oslib/linux-blkzoned.c
+@@ -0,0 +1,3 @@
++#ifndef FALLOC_FL_ZERO_RANGE
++#define FALLOC_FL_ZERO_RANGE 0x10
++#endif
+

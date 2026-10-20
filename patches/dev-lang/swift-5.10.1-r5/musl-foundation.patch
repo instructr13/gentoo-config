@@ -1,0 +1,279 @@
+# Swift 5.10.1 only: swift-corelibs-foundation on musl.
+#
+# 1. CoreFoundation_Prefix.h -- issetugid()
+#    CF stubs it out with a function-like macro because glibc lacks it. musl
+#    declares the real function in <unistd.h>, where the macro breaks it:
+#      unistd.h:182:15: error: too many arguments provided to function-like macro
+#
+# 2. ForSwiftFoundationOnly.h -- __GLIBC_PREREQ / statx
+#    __GLIBC_PREREQ exists only on glibc:
+#      error: function-like macro '__GLIBC_PREREQ' is not defined
+#    musl declares struct statx, statx() and the AT_STATX_*/STATX_* constants
+#    itself (all behind _GNU_SOURCE), so it needs none of the glibc<2.28
+#    fallbacks -- pulling in <linux/stat.h> there would redefine struct statx.
+#    It does need <sys/syscall.h> for __NR_statx plus the stat/fcntl headers.
+#
+# 3. ForSwiftFoundationOnly.h -- d_namlen
+#    A BSD/Darwin dirent field. glibc offers _D_EXACT_NAMLEN; musl has neither:
+#      error: no member named 'd_namlen' in 'struct dirent'
+#
+# 4. CFUtilities.c -- environ
+#    glibc exposes the internal __environ; musl declares only `environ`.
+#
+# 5. Sources/{Foundation,FoundationNetworking,FoundationXML}/CMakeLists.txt
+#    CoreFoundation adds _GNU_SOURCE for COMPILE_LANGUAGE:C only, so the Clang
+#    importer never sees it. On musl that hides struct statx and STATX_*:
+#      error: variable has incomplete type 'struct statx'
+#      error: use of undeclared identifier 'STATX_ALL'
+#
+# 6. Port.swift / Process.swift / Host.swift -- socket type constants
+#    glibc declares them as enum __socket_type (imported as RawRepresentable);
+#    musl uses plain #defines that import as Int32, so there is no .rawValue:
+#      error: value of type 'Int32' has no member 'rawValue'
+#
+# 7. Thread.swift -- backtrace(3)
+#    A glibc extension; musl has no <execinfo.h>. Take the same no-backtrace
+#    path Android and OpenBSD already use.
+#      error: cannot find 'backtrace' in scope
+#
+
+# 8. Sources/Foundation/CMakeLists.txt -- fts(3)
+#    FileManager uses fts_open/fts_read/fts_close/fts_set for directory
+#    traversal. glibc and the BSDs have them in libc; musl does not:
+#      ld.lld: error: undefined symbol: fts_open
+#    Gentoo ships sys-libs/fts-standalone (Alpine: fts-dev): <fts.h> plus a
+#    separate libfts. The header alone is why compilation succeeded and only the
+#    link failed. check_symbol_exists() links, so it is exactly the right probe --
+#    it fails on musl even with the header present. Also exported through
+#    -public-autolink-library for the static build, as ICU already is.
+#
+
+# 9. ForSwiftFoundationOnly.h -- statx guard (revised)
+#    __NR_statx comes from <sys/syscall.h>, but `struct statx` and the STATX_*
+#    constants live behind _GNU_SOURCE (musl) / __USE_GNU (glibc). This header is
+#    installed and included by projects that define neither -- TSC, swiftpm, ... --
+#    which then failed with "variable has incomplete type 'struct statx'".
+#    Requiring STATX_BTIME as well lets those fall through to the lstat() version
+#    the file already provides for exactly this case.
+#
+# Items 1-4 and 6-9 are musl-specific; item 5 is correct everywhere.
+# Item 8 additionally requires sys-libs/fts-standalone to be installed.
+
+--- a/swift-corelibs-foundation/CoreFoundation/Base.subproj/CoreFoundation_Prefix.h
++++ b/swift-corelibs-foundation/CoreFoundation/Base.subproj/CoreFoundation_Prefix.h
+@@ -304,7 +304,10 @@
+ #endif
+     
+ 
+-#if !TARGET_OS_CYGWIN && !TARGET_OS_BSD
++// glibc has no issetugid(); musl declares the real one in <unistd.h>, where a
++// function-like macro of the same name breaks the declaration:
++//   unistd.h:182:15: error: too many arguments provided to function-like macro
++#if !TARGET_OS_CYGWIN && !TARGET_OS_BSD && (!TARGET_OS_LINUX || defined(__GLIBC__))
+ #define issetugid() 0
+ #endif
+ 
+--- a/swift-corelibs-foundation/CoreFoundation/Base.subproj/ForSwiftFoundationOnly.h
++++ b/swift-corelibs-foundation/CoreFoundation/Base.subproj/ForSwiftFoundationOnly.h
+@@ -69,7 +69,15 @@
+ #include <features.h>
+ #include <termios.h>
+ 
+-#if __GLIBC_PREREQ(2, 28) == 0
++// __GLIBC_PREREQ only exists on glibc. musl declares struct statx, statx() and
++// the AT_STATX_*/STATX_* constants itself, so it needs none of the fallbacks
++// below -- pulling in <linux/stat.h> there would redefine struct statx.
++#if !defined(__GLIBC__)
++#include <sys/syscall.h>
++#include <sys/types.h>
++#include <sys/stat.h>
++#include <fcntl.h>
++#elif __GLIBC_PREREQ(2, 28) == 0
+ // required for statx() system call, glibc >=2.28 wraps the kernel function
+ #include <sys/syscall.h>
+ #include <sys/types.h>
+@@ -560,9 +568,10 @@
+ 
+ #if defined(__unix__) || (defined(__APPLE__) && defined(__MACH__))
+ static inline int _direntNameLength(struct dirent *entry) {
+-#ifdef _D_EXACT_NAMLEN  // defined on Linux
++#ifdef _D_EXACT_NAMLEN  // defined by glibc
+     return _D_EXACT_NAMLEN(entry);
+-#elif TARGET_OS_ANDROID
++#elif TARGET_OS_ANDROID || TARGET_OS_LINUX
++    // musl has neither _D_EXACT_NAMLEN nor the BSD d_namlen field.
+     return strlen(entry->d_name);
+ #else
+     return entry->d_namlen;
+@@ -582,7 +591,13 @@
+ 
+ 
+ #if TARGET_OS_LINUX
+-#ifdef __NR_statx
++// __NR_statx alone is not enough: the syscall number comes from
++// <sys/syscall.h>, but `struct statx` and the STATX_* constants live behind
++// _GNU_SOURCE (musl) / __USE_GNU (glibc). This header is installed and gets
++// included by projects that do not define either -- swift-tools-support-core,
++// swiftpm, ... -- so require the type as well and let those fall through to
++// the lstat() version below.
++#if defined(__NR_statx) && defined(STATX_BTIME)
+ 
+ // There is no glibc statx() function, it must be called using syscall().
+ 
+--- a/swift-corelibs-foundation/CoreFoundation/Base.subproj/CFUtilities.c
++++ b/swift-corelibs-foundation/CoreFoundation/Base.subproj/CFUtilities.c
+@@ -1675,7 +1675,9 @@
+         extern char **environ;
+         char **envp = environ;
+ #elif TARGET_OS_LINUX
+-#if !defined(environ) && !TARGET_OS_ANDROID
++// glibc exposes the internal __environ as well; musl declares only `environ`,
++// which <unistd.h> already provides here.
++#if !defined(environ) && !TARGET_OS_ANDROID && defined(__GLIBC__)
+ #define environ __environ
+ #endif
+         char **envp = environ;
+--- a/swift-corelibs-foundation/Sources/Foundation/CMakeLists.txt
++++ b/swift-corelibs-foundation/Sources/Foundation/CMakeLists.txt
+@@ -152,7 +152,24 @@
+   DEPLOYMENT_RUNTIME_SWIFT)
+ target_compile_options(Foundation PUBLIC
+   $<$<BOOL:${ENABLE_TESTING}>:-enable-testing>
+-  "SHELL:-Xcc -F${CMAKE_BINARY_DIR}")
++  "SHELL:-Xcc -F${CMAKE_BINARY_DIR}"
++  # CoreFoundation adds _GNU_SOURCE for C only; the Clang importer needs it
++  # too. musl keeps struct statx and the STATX_* constants behind it, so
++  # without this the CoreFoundation module fails to build for Swift.
++  "SHELL:-Xcc -D_GNU_SOURCE")
++# FileManager uses fts(3) for directory traversal. glibc and the BSDs have it in
++# libc; musl does not, and provides it only through a separate library
++# (Gentoo: sys-libs/fts-standalone, Alpine: fts-dev). check_symbol_exists links,
++# so it fails on musl even though <fts.h> is present -- exactly the test needed.
++include(CheckSymbolExists)
++check_symbol_exists(fts_open "fts.h" FOUNDATION_FTS_IN_LIBC)
++if(NOT FOUNDATION_FTS_IN_LIBC)
++  find_library(FOUNDATION_FTS_LIBRARY NAMES fts)
++  if(NOT FOUNDATION_FTS_LIBRARY)
++    message(FATAL_ERROR "fts(3) is not in libc and no libfts was found")
++  endif()
++endif()
++
+ target_link_libraries(Foundation
+   PRIVATE
+     $<$<PLATFORM_ID:Windows>:CoreFoundationResources>
+@@ -162,7 +179,8 @@
+     CoreFoundation
+     uuid
+   PUBLIC
+-    swiftDispatch)
++    swiftDispatch
++    $<$<BOOL:${FOUNDATION_FTS_LIBRARY}>:${FOUNDATION_FTS_LIBRARY}>)
+ set_target_properties(Foundation PROPERTIES
+   INSTALL_RPATH "$ORIGIN"
+   BUILD_RPATH "$<TARGET_FILE_DIR:swiftDispatch>"
+@@ -191,6 +209,11 @@
+              -Xfrontend -public-autolink-library -Xfrontend ${icu_uc_basename}
+              -Xfrontend -public-autolink-library -Xfrontend ${icu_data_basename}
+              -Xfrontend -public-autolink-library -Xfrontend BlocksRuntime")
++  if(FOUNDATION_FTS_LIBRARY)
++    target_compile_options(Foundation
++      PRIVATE
++        "SHELL:-Xfrontend -public-autolink-library -Xfrontend fts")
++  endif()
+   # ICU libraries are linked by absolute library path in this project,
+   # but -public-autolink-library forces to resolve library path by
+   # library search path given by -L, so add a directory of icui18n
+--- a/swift-corelibs-foundation/Sources/FoundationNetworking/CMakeLists.txt
++++ b/swift-corelibs-foundation/Sources/FoundationNetworking/CMakeLists.txt
+@@ -59,7 +59,11 @@
+   # forced load symbol when validating the TBD
+   -Xfrontend -validate-tbd-against-ir=none
+   $<$<BOOL:${ENABLE_TESTING}>:-enable-testing>
+-  "SHELL:-Xcc -F${CMAKE_BINARY_DIR}")
++  "SHELL:-Xcc -F${CMAKE_BINARY_DIR}"
++  # CoreFoundation adds _GNU_SOURCE for C only; the Clang importer needs it
++  # too. musl keeps struct statx and the STATX_* constants behind it, so
++  # without this the CoreFoundation module fails to build for Swift.
++  "SHELL:-Xcc -D_GNU_SOURCE")
+ target_link_libraries(FoundationNetworking
+   PRIVATE
+     CFURLSessionInterface
+--- a/swift-corelibs-foundation/Sources/FoundationXML/CMakeLists.txt
++++ b/swift-corelibs-foundation/Sources/FoundationXML/CMakeLists.txt
+@@ -10,7 +10,11 @@
+   DEPLOYMENT_RUNTIME_SWIFT)
+ target_compile_options(FoundationXML PUBLIC
+   $<$<BOOL:${ENABLE_TESTING}>:-enable-testing>
+-  "SHELL:-Xcc -F${CMAKE_BINARY_DIR}")
++  "SHELL:-Xcc -F${CMAKE_BINARY_DIR}"
++  # CoreFoundation adds _GNU_SOURCE for C only; the Clang importer needs it
++  # too. musl keeps struct statx and the STATX_* constants behind it, so
++  # without this the CoreFoundation module fails to build for Swift.
++  "SHELL:-Xcc -D_GNU_SOURCE")
+ target_link_libraries(FoundationXML
+   PRIVATE
+     CFXMLInterface
+--- a/swift-corelibs-foundation/Sources/Foundation/Port.swift
++++ b/swift-corelibs-foundation/Sources/Foundation/Port.swift
+@@ -85,8 +85,11 @@
+ 
+ #if canImport(Glibc) && !os(Android) && !os(OpenBSD)
+ import Glibc
+-fileprivate let SOCK_STREAM = Int32(Glibc.SOCK_STREAM.rawValue)
+-fileprivate let SOCK_DGRAM  = Int32(Glibc.SOCK_DGRAM.rawValue)
++// glibc declares the socket type constants as an enum (__socket_type), which
++// Swift imports as a RawRepresentable; musl uses plain #defines that import as
++// Int32, so there is no .rawValue to unwrap.
++fileprivate let SOCK_STREAM = Int32(Glibc.SOCK_STREAM)
++fileprivate let SOCK_DGRAM  = Int32(Glibc.SOCK_DGRAM)
+ fileprivate let IPPROTO_TCP = Int32(Glibc.IPPROTO_TCP)
+ #endif
+ 
+--- a/swift-corelibs-foundation/Sources/Foundation/Process.swift
++++ b/swift-corelibs-foundation/Sources/Foundation/Process.swift
+@@ -779,7 +779,7 @@
+ #if os(macOS) || os(iOS) || os(Android) || os(OpenBSD)
+         socketpair(AF_UNIX, SOCK_STREAM, 0, &taskSocketPair)
+ #else
+-        socketpair(AF_UNIX, Int32(SOCK_STREAM.rawValue), 0, &taskSocketPair)
++        socketpair(AF_UNIX, Int32(SOCK_STREAM), 0, &taskSocketPair)
+ #endif
+         var context = CFSocketContext()
+         context.version = 0
+--- a/swift-corelibs-foundation/Sources/Foundation/Host.swift
++++ b/swift-corelibs-foundation/Sources/Foundation/Host.swift
+@@ -284,7 +284,7 @@
+ #if os(macOS) || os(iOS) || os(Android) || os(OpenBSD)
+             hints.ai_socktype = SOCK_STREAM
+ #else
+-            hints.ai_socktype = Int32(SOCK_STREAM.rawValue)
++            hints.ai_socktype = Int32(SOCK_STREAM)
+ #endif
+     
+             hints.ai_flags = flags
+--- a/swift-corelibs-foundation/Sources/Foundation/Thread.swift
++++ b/swift-corelibs-foundation/Sources/Foundation/Thread.swift
+@@ -362,7 +362,10 @@
+         let maxSupportedStackDepth = 128;
+         let addrs = UnsafeMutablePointer<UnsafeMutableRawPointer?>.allocate(capacity: maxSupportedStackDepth)
+         defer { addrs.deallocate() }
+-#if os(Android) || os(OpenBSD)
++// backtrace(3)/backtrace_symbols(3) are glibc extensions; musl has no
++// <execinfo.h> at all, and Foundation has no way to test for it from Swift.
++// Take the same no-backtrace path Android and OpenBSD already use.
++#if os(Android) || os(OpenBSD) || os(Linux)
+         let count = 0
+ #elseif os(Windows)
+         let count = RtlCaptureStackBackTrace(0, DWORD(maxSupportedStackDepth),
+@@ -383,7 +386,10 @@
+     }
+ 
+     open class var callStackSymbols: [String] {
+-#if os(Android) || os(OpenBSD)
++// backtrace(3)/backtrace_symbols(3) are glibc extensions; musl has no
++// <execinfo.h> at all, and Foundation has no way to test for it from Swift.
++// Take the same no-backtrace path Android and OpenBSD already use.
++#if os(Android) || os(OpenBSD) || os(Linux)
+         return []
+ #elseif os(Windows)
+         let hProcess: HANDLE = GetCurrentProcess()

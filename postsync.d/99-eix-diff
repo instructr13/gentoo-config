@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+
+if [[ -e /var/cache/eix/previous.eix ]]; then
+  eix-diff;
+fi
+

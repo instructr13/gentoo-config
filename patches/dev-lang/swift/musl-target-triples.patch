@@ -1,0 +1,77 @@
+# Make the build target musl instead of glibc.
+#
+# Swift's build system assumes "Linux" means glibc and hardcodes `*-linux-gnu`
+# in three independent places. Each one produces a toolchain aimed at the wrong
+# C library: the wrong dynamic linker (/lib64/ld-linux-x86-64.so.2), no crt
+# objects, no libgcc, and -- on Gentoo's llvm profile -- no matching
+# /etc/clang/<triple>-clang.cfg, so the distribution's runtime defaults
+# (compiler-rt/libunwind/libc++/lld) are silently dropped:
+#
+#   ld: error: cannot open crtbeginS.o: No such file or directory
+#   ld: error: unable to find library -lgcc
+#
+# The vendor matters as much as the ABI. `x86_64-unknown-linux-musl` satisfies
+# the system clang (Gentoo symlinks a config for it) but not the clang built
+# during this build, which has no config files at all and finds crt objects and
+# libgcc by scanning /usr/lib/gcc/<triple>. Only the vendor Gentoo actually uses
+# on disk -- `pc` -- resolves there, so all three sites take the vendor and the
+# environment from what the compiler reports instead of inventing them. glibc
+# hosts fall through to the upstream defaults untouched.
+--- a/swift/utils/swift_build_support/swift_build_support/products/product.py
++++ b/swift/utils/swift_build_support/swift_build_support/products/product.py
+@@ -359,6 +359,11 @@
+             if 'alpine-linux-musl' in output:
+                 vendor = 'alpine'
+                 abi = 'musl'
++            elif 'linux-musl' in output:
++                components = output.strip().split('-')
++                if len(components) == 4:
++                    vendor = components[1]
++                abi = 'musl'
+ 
+             sysroot_arch, abi = arch_platform_to_abi.get(arch, (arch, abi))
+ 
+--- a/llvm-project/llvm/cmake/modules/GetHostTriple.cmake
++++ b/llvm-project/llvm/cmake/modules/GetHostTriple.cmake
+@@ -47,11 +47,15 @@
+     else()
+-      set(config_guess ${LLVM_MAIN_SRC_DIR}/cmake/config.guess)
+-      execute_process(COMMAND sh ${config_guess}
+-        RESULT_VARIABLE TT_RV
+-        OUTPUT_VARIABLE TT_OUT
+-        OUTPUT_STRIP_TRAILING_WHITESPACE)
+-      if( NOT TT_RV EQUAL 0 )
+-        message(FATAL_ERROR "Failed to execute ${config_guess}")
+-      endif( NOT TT_RV EQUAL 0 )
+-      set( value ${TT_OUT} )
++      if( CMAKE_C_COMPILER_TARGET )
++        set( value ${CMAKE_C_COMPILER_TARGET} )
++      else()
++        set(config_guess ${LLVM_MAIN_SRC_DIR}/cmake/config.guess)
++        execute_process(COMMAND sh ${config_guess}
++          RESULT_VARIABLE TT_RV
++          OUTPUT_VARIABLE TT_OUT
++          OUTPUT_STRIP_TRAILING_WHITESPACE)
++        if( NOT TT_RV EQUAL 0 )
++          message(FATAL_ERROR "Failed to execute ${config_guess}")
++        endif( NOT TT_RV EQUAL 0 )
++        set( value ${TT_OUT} )
++      endif()
+     endif()
+--- a/swift/cmake/modules/SwiftConfigureSDK.cmake
++++ b/swift/cmake/modules/SwiftConfigureSDK.cmake
+@@ -368,7 +368,13 @@
+       set(SWIFT_SDK_${prefix}_ARCH_${arch}_PATH "/" CACHE STRING "CMAKE_SYSROOT for ${prefix} ${arch}")
+ 
+       if("${prefix}" STREQUAL "LINUX")
+-        if(arch MATCHES "(armv5)")
++        execute_process(COMMAND "${CMAKE_C_COMPILER}" -dumpmachine
++                        OUTPUT_VARIABLE SWIFT_HOST_CC_TRIPLE
++                        OUTPUT_STRIP_TRAILING_WHITESPACE
++                        ERROR_QUIET)
++        if(SWIFT_HOST_CC_TRIPLE MATCHES "^[^-]+-([^-]+)-linux-(musl[a-z0-9]*)$")
++          set(SWIFT_SDK_LINUX_ARCH_${arch}_TRIPLE "${arch}-${CMAKE_MATCH_1}-linux-${CMAKE_MATCH_2}")
++        elseif(arch MATCHES "(armv5)")
+           set(SWIFT_SDK_LINUX_ARCH_${arch}_TRIPLE "${arch}-unknown-linux-gnueabi")
+         elseif(arch MATCHES "(armv6|armv7)")
+           set(SWIFT_SDK_LINUX_ARCH_${arch}_TRIPLE "${arch}-unknown-linux-gnueabihf")

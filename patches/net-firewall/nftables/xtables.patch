@@ -1,0 +1,5 @@
+--- a/src/xt.c
++++ b/src/xt.c
+@@ -0,0 +1 @@
++#define __UAPI_DEF_ETHHDR 0
+

@@ -1,0 +1,19 @@
+--- a/meson.build
++++ b/meson.build
+@@ -113,8 +113,14 @@
+   else
+     assert(not meson.is_cross_build(), 'Cannot determine wtmp for this cross compile, please specify -Dwtmpfile=')
+     path_wtmp = '/var/log/utx.log'
+-    assert(run_command('test', '-e', path_wtmp, check: false).returncode() == 0, 'Do not know which filename to watch for wtmp changes')
+-    config_h.set_quoted('PATH_WTMP', path_wtmp)
++    # musl: This is just a build fix hack.
++    # As usual they know better, consider all other projects crap and offer zero
++    # alternatives: So wtmp is a dead stub only [1] (= /dev/null/wtmp - taken
++    # from musl sources).
++    # Maybe a hero comes along and adds utmps [2] to make accountsservice useful for musl
++    # [1] https://wiki.musl-libc.org/faq.html#Q:-Why-is-the-utmp/wtmp-functionality-only-implemented-as-stubs?
++    # [2] https://github.com/skarnet/utmps
++    config_h.set_quoted('PATH_WTMP', '/dev/null/wtmp')
+   endif
+ else
+   config_h.set_quoted('PATH_WTMP', path_wtmp)

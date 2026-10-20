@@ -1,0 +1,5 @@
+--- a/tools/intel_gpu_frequency.c
++++ b/tools/intel_gpu_frequency.c
+@@ -0,0 +1 @@
++#include <limits.h>
+

@@ -1,0 +1,19 @@
+net-firewall/firewalld gui
+
+gui-apps/noctalia-qs -crash-handler
+gui-apps/sddm-gentoo-config -kwin weston
+
+gnome-base/gvfs cdda gnome-online-accounts google gphoto2 ios keyring mtp udisks
+gnome-base/nautilus -previewer
+
+gnome-extra/evolution-data-server oauth-gtk4 sound
+
+media-fonts/maple-mono ligature nerd
+
+sys-fs/udiskie autostart libnotify
+
+# Remove unused gtk apps
+dev-util/perf -gtk
+net-dns/avahi -gtk
+sys-block/fio -gtk
+

@@ -1,0 +1,187 @@
+# Swift 5.10.1 only: places where the Swift sources assume glibc.
+#
+# Upstream gates all of these on `canImport(Musl)` / `canImport(SwiftMusl)`,
+# which is always false here because Swift 5.10 configures no MUSL SDK -- so
+# Linux unconditionally takes the glibc path. Swift 6.x has the Musl module and
+# selects correctly, hence the version-specific directory.
+#
+# 1. Threading/Impl/{Linux,Pthreads}.h + Threading/Mutex.h -- lazy mutex init
+#    A constexpr function returning ::pthread_mutex_t. glibc's is a plain union
+#    of ints and thus a literal type; musl's holds
+#    `volatile void *volatile __p[...]`, and a volatile member makes the type
+#    non-literal, which a constexpr function may not return:
+#      error: constexpr function's return type 'lazy_mutex_handle'
+#             (aka 'pthread_mutex_t') is not a literal type
+#    Swift 6.x replaced the function with a macro used directly in LazyMutex's
+#    mem-initializer, sidestepping the rule while keeping LazyMutex
+#    constant-initializable (it exists for static allocation). The #ifndef in
+#    Mutex.h keeps the backends that still provide the function (Darwin, Win32,
+#    C11, Nothreads) working unchanged.
+#
+# 2. Platform.swift -- `sighandler_t`
+#    Aliased to glibc's internal spelling `__sighandler_t`, which musl has
+#    nowhere; it declares `sighandler_t` directly:
+#      error: cannot find type '__sighandler_t' in scope
+#    Spelling the type out is a no-op on glibc (__sighandler_t is a typedef for
+#    exactly this) and works on musl regardless of what libc exports.
+#
+# 3. Platform.swift -- `environ`
+#    glibc exposes both `environ` and the internal `__environ`; musl declares
+#    only `environ`:
+#      error: cannot find '__environ' in scope
+#    Qualifying with the C module avoids resolving to the property being
+#    declared, and works on glibc too.
+#
+# 4. SwiftPrivateThreadExtras.swift -- `pthread_t`
+#    glibc's pthread_t is `unsigned long`; musl's is `struct __pthread *`, which
+#    imports as a nullable OpaquePointer. It has no no-argument initializer, and
+#    pthread_create takes UnsafeMutablePointer<pthread_t?> rather than
+#    UnsafeMutablePointer<pthread_t>:
+#      error: missing argument for parameter #1 in call
+#      error: cannot convert value of type 'UnsafeMutablePointer<pthread_t>'
+#             to expected argument type 'UnsafeMutablePointer<pthread_t?>'
+#    The upstream `#else` branch already has exactly the right shape; make Linux
+#    use it. NOTE: unlike the others, this hunk is musl-specific -- a glibc build
+#    needs the original branch.
+#
+# The `lgammal_r` error in the same module needs no patch: musl keeps it behind
+# _GNU_SOURCE, which /etc/portage/env/dev-lang/swift supplies.
+#
+# 5. swift-backtrace/Utils.swift -- `FILE`
+#    glibc defines `struct _IO_FILE` completely, so Swift imports FILE as a
+#    nominal type and stdio handles as UnsafeMutablePointer<FILE>. musl leaves
+#    the struct incomplete, so FILE is not importable at all and stdout/stderr
+#    arrive as OpaquePointer?:
+#      Utils.swift:145:32: error: cannot find type 'FILE' in scope
+#    fputs/fflush/fclose accept whichever spelling the platform uses, so storing
+#    the handle as OpaquePointer is enough. Also musl-specific.
+
+--- a/swift/include/swift/Threading/Impl/Linux.h
++++ b/swift/include/swift/Threading/Impl/Linux.h
+@@ -110,9 +110,11 @@
+ 
+ // We don't actually need to be lazy here because pthreads has
+ // PTHREAD_MUTEX_INITIALIZER.
+-inline constexpr lazy_mutex_handle lazy_mutex_initializer() {
+-  return PTHREAD_MUTEX_INITIALIZER;
+-}
++//
++// This has to be a macro rather than a constexpr function: musl's
++// pthread_mutex_t holds a volatile member, which makes it a non-literal type,
++// and a constexpr function may not return one. Swift 6.x does exactly this.
++#define SWIFT_LAZY_MUTEX_INITIALIZER PTHREAD_MUTEX_INITIALIZER
+ inline void lazy_mutex_destroy(lazy_mutex_handle &handle) {
+   SWIFT_LINUXTHREADS_CHECK(::pthread_mutex_destroy(&handle));
+ }
+--- a/swift/include/swift/Threading/Impl/Pthreads.h
++++ b/swift/include/swift/Threading/Impl/Pthreads.h
+@@ -107,9 +107,11 @@
+ 
+ // We don't actually need to be lazy here because pthreads has
+ // PTHREAD_MUTEX_INITIALIZER.
+-inline constexpr lazy_mutex_handle lazy_mutex_initializer() {
+-  return PTHREAD_MUTEX_INITIALIZER;
+-}
++//
++// This has to be a macro rather than a constexpr function: musl's
++// pthread_mutex_t holds a volatile member, which makes it a non-literal type,
++// and a constexpr function may not return one. Swift 6.x does exactly this.
++#define SWIFT_LAZY_MUTEX_INITIALIZER PTHREAD_MUTEX_INITIALIZER
+ inline void lazy_mutex_destroy(lazy_mutex_handle &handle) {
+   SWIFT_PTHREADS_CHECK(::pthread_mutex_destroy(&handle));
+ }
+--- a/swift/include/swift/Threading/Mutex.h
++++ b/swift/include/swift/Threading/Mutex.h
+@@ -131,6 +131,13 @@
+   void unlock() { threading_impl::mutex_unsafe_unlock(Handle); }
+ };
+ 
++// Backends that cannot express the initializer as a constexpr function (the
++// pthread ones, because musl's pthread_mutex_t is not a literal type) define
++// this macro instead; everyone else keeps the function.
++#ifndef SWIFT_LAZY_MUTEX_INITIALIZER
++#define SWIFT_LAZY_MUTEX_INITIALIZER threading_impl::lazy_mutex_initializer()
++#endif
++
+ /// A lazily initialized variant of Mutex.
+ ///
+ /// Use Mutex instead unless you need static allocation.  LazyMutex *may*
+@@ -144,7 +151,7 @@
+   LazyMutex &operator=(LazyMutex &&) = delete;
+ 
+ public:
+-  constexpr LazyMutex() : Handle(threading_impl::lazy_mutex_initializer()) {}
++  constexpr LazyMutex() : Handle(SWIFT_LAZY_MUTEX_INITIALIZER) {}
+ 
+   // No destructor; this is intentional; this class is for STATIC allocation
+   // and you don't need to delete mutexes on termination.
+--- a/swift/stdlib/public/Platform/Platform.swift
++++ b/swift/stdlib/public/Platform/Platform.swift
+@@ -340,7 +340,13 @@
+ public var SIG_ERR: sig_t { return unsafeBitCast(-1, to: sig_t.self) }
+ public var SIG_HOLD: sig_t { return unsafeBitCast(3, to: sig_t.self) }
+ #elseif os(Linux) || os(FreeBSD) || os(PS4) || os(Android) || os(Haiku)
+-public typealias sighandler_t = __sighandler_t
++// `__sighandler_t` is a glibc-internal spelling; musl has no such name (it
++// only declares `sighandler_t` itself, under _GNU_SOURCE). Spell the type
++// out instead -- it is `void (*)(int)` on every platform this branch covers,
++// which is exactly what glibc's __sighandler_t is a typedef for. Swift 6.x
++// solves this with `#if !canImport(SwiftMusl)`, but 5.10 has no Musl module
++// to test for.
++public typealias sighandler_t = @convention(c) (Int32) -> Void
+ 
+ public var SIG_DFL: sighandler_t? { return nil }
+ public var SIG_IGN: sighandler_t {
+@@ -485,7 +491,10 @@
+ }
+ #elseif os(Linux)
+ public var environ: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?> {
+-  return __environ
++  // glibc exposes both `environ` and the internal `__environ`; musl only
++  // declares `environ`. Qualify with the C module so this does not resolve to
++  // the property being declared here.
++  return SwiftGlibc.environ
+ }
+ #endif
+ #endif // SWIFT_STDLIB_HAS_ENVIRON
+--- a/swift/stdlib/private/SwiftPrivateThreadExtras/SwiftPrivateThreadExtras.swift
++++ b/swift/stdlib/private/SwiftPrivateThreadExtras/SwiftPrivateThreadExtras.swift
+@@ -71,7 +71,13 @@
+ #else
+ public typealias ThreadHandle = pthread_t
+ 
+-#if (os(Linux) && !canImport(Musl)) || os(Android)
++// Upstream distinguishes musl with `canImport(Musl)`, but Swift 5.10 configures
++// no MUSL SDK, so that test is always false and Linux always took the glibc
++// branch below. On musl `pthread_t` is `struct __pthread *`, which imports as a
++// nullable OpaquePointer: it has no no-argument initializer, and pthread_create
++// takes `UnsafeMutablePointer<pthread_t?>` rather than
++// `UnsafeMutablePointer<pthread_t>`. Use the pointer form on Linux.
++#if os(Android)
+ internal func _make_pthread_t() -> pthread_t {
+   return pthread_t()
+ }
+--- a/swift/stdlib/public/libexec/swift-backtrace/Utils.swift
++++ b/swift/stdlib/public/libexec/swift-backtrace/Utils.swift
+@@ -141,8 +141,12 @@
+ 
+ #endif // os(macOS)
+ 
++// glibc defines `struct _IO_FILE` completely, so Swift imports FILE as a
++// nominal type and file handles as UnsafeMutablePointer<FILE>. musl leaves the
++// struct incomplete, so FILE is not importable at all and stdio handles arrive
++// as OpaquePointer. fputs/fflush/fclose accept whichever the platform uses.
+ struct CFileStream: TextOutputStream {
+-  var fp: UnsafeMutablePointer<FILE>
++  var fp: OpaquePointer
+ 
+   public func write(_ string: String) {
+     fputs(string, fp)
+@@ -153,5 +157,5 @@
+   }
+ }
+ 
+-var standardOutput = CFileStream(fp: stdout)
+-var standardError = CFileStream(fp: stderr)
++var standardOutput = CFileStream(fp: stdout!)
++var standardError = CFileStream(fp: stderr!)

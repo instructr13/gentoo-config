@@ -1,0 +1,141 @@
+# Swift 5.10.1 only: swift-tools-support-core on musl.
+#
+# Every hunk is a case where upstream already has the right code but selects it
+# with canImport(Musl), which is always false here because Swift 5.10 configures
+# no MUSL SDK -- so Linux unconditionally takes the glibc branch.
+#
+# 1. TSCBasic/WritableByteStream.swift -- FILEPointer
+#    musl leaves `struct _IO_FILE` incomplete, so FILE is not importable and
+#    stdio handles arrive as OpaquePointer:
+#      error: cannot find type 'FILE' in scope
+#      error: cannot convert value of type 'OpaquePointer?' to 'AbsolutePath'
+#    Android already uses exactly the OpaquePointer shape needed here.
+#
+# 2. TSCUtility/InterruptHandler.swift -- struct sigaction
+#    glibc holds an anonymous union imported as __sigaction_handler; musl names
+#    the member __sa_handler and reaches sa_handler through a macro Swift cannot
+#    import:
+#      error: value of type 'sigaction' has no member '__sigaction_handler'
+#    Assigning the union member directly also removes the unsafeBitCast.
+#
+# 3. TSCUtility/FSWatch.swift -- fd_set
+#    glibc calls the member __fds_bits, musl (like bionic) calls it fds_bits:
+#      error: value of type 'fd_set' has no member '__fds_bits'
+#    Four sites: FD_ZERO, FD_SET, and two helpers.
+#
+# 4. TSCUtility/{IndexStore,dlopen}.swift -- RTLD_DEEPBIND
+#    A glibc extension with no musl equivalent:
+#      error: cannot find 'RTLD_DEEPBIND' in scope
+#    canImport(Glibc) cannot discriminate because the Swift overlay module is
+#    named Glibc on musl too, so use 0 -- dlopen's default binding, already the
+#    value every other non-glibc platform gets here.
+#
+# All hunks are musl-specific: a glibc build needs the original branches
+# (item 4 would merely lose the deep-bind hint).
+
+--- a/swift-tools-support-core/Sources/TSCBasic/WritableByteStream.swift
++++ b/swift-tools-support-core/Sources/TSCBasic/WritableByteStream.swift
+@@ -66,7 +66,11 @@
+ // Public alias to the old name to not introduce API compatibility.
+ public typealias OutputByteStream = WritableByteStream
+ 
+-#if os(Android) || canImport(Musl)
++// Upstream distinguishes musl with canImport(Musl), but Swift 5.10 configures no
++// MUSL SDK so that test is always false. musl leaves `struct _IO_FILE`
++// incomplete, so FILE is not importable and stdio handles arrive as
++// OpaquePointer -- the same shape Android already uses here.
++#if os(Android) || os(Linux) || canImport(Musl)
+ public typealias FILEPointer = OpaquePointer
+ #else
+ public typealias FILEPointer = UnsafeMutablePointer<FILE>
+--- a/swift-tools-support-core/Sources/TSCUtility/InterruptHandler.swift
++++ b/swift-tools-support-core/Sources/TSCUtility/InterruptHandler.swift
+@@ -78,6 +78,12 @@
+         action.__sigaction_u.__sa_handler = self.signalHandler
+       #elseif os(Android)
+         action.sa_handler = self.signalHandler
++      #elseif os(Linux)
++        // glibc's struct sigaction holds an anonymous union imported as
++        // __sigaction_handler; musl names the union member __sa_handler and
++        // reaches sa_handler through a macro, which Swift cannot import. Assign
++        // the union member directly -- no unsafeBitCast needed either.
++        action.__sa_handler.sa_handler = self.signalHandler
+       #else
+         action.__sigaction_handler = unsafeBitCast(
+             self.signalHandler,
+--- a/swift-tools-support-core/Sources/TSCUtility/FSWatch.swift
++++ b/swift-tools-support-core/Sources/TSCUtility/FSWatch.swift
+@@ -621,7 +621,11 @@
+ // FIXME: <rdar://problem/45794219> Swift should provide shims for FD_ macros
+ 
+ private func FD_ZERO(_ set: inout fd_set) {
+-    #if os(Android) || canImport(Musl)
++    // glibc names the fd_set member __fds_bits; musl (like bionic) calls it
++    // fds_bits. Upstream selects with canImport(Musl), which is always false on
++    // Swift 5.10 because no MUSL SDK is configured, so include os(Linux) here
++    // and in the three FD_ helpers below.
++    #if os(Android) || os(Linux) || canImport(Musl)
+         #if arch(arm)
+             set.fds_bits = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+@@ -641,7 +645,7 @@
+ private func FD_SET(_ fd: Int32, _ set: inout fd_set) {
+     let intOffset = Int(fd / 16)
+     let bitOffset = Int(fd % 16)
+-  #if os(Android) || canImport(Musl)
++  #if os(Android) || os(Linux) || canImport(Musl)
+     var fd_bits = set.fds_bits
+     let mask: UInt = 1 << bitOffset
+   #else
+@@ -685,7 +689,7 @@
+ 	#endif
+         default: break
+     }
+-  #if os(Android) || canImport(Musl)
++  #if os(Android) || os(Linux) || canImport(Musl)
+     set.fds_bits = fd_bits
+   #else
+     set.__fds_bits = fd_bits
+@@ -695,7 +699,7 @@
+ private func FD_ISSET(_ fd: Int32, _ set: inout fd_set) -> Bool {
+     let intOffset = Int(fd / 32)
+     let bitOffset = Int(fd % 32)
+-  #if os(Android) || canImport(Musl)
++  #if os(Android) || os(Linux) || canImport(Musl)
+     let fd_bits = set.fds_bits
+     let mask: UInt = 1 << bitOffset
+   #else
+--- a/swift-tools-support-core/Sources/TSCUtility/IndexStore.swift
++++ b/swift-tools-support-core/Sources/TSCUtility/IndexStore.swift
+@@ -457,13 +457,13 @@
+     public static let deepBind: _DLOpenFlags = _DLOpenFlags(rawValue: 0)
+   #else
+     public static let first: _DLOpenFlags = _DLOpenFlags(rawValue: 0)
+-  #if os(Linux) && canImport(Glibc)
+-    public static let deepBind: _DLOpenFlags = _DLOpenFlags(rawValue: RTLD_DEEPBIND)
+-  #else
++    // RTLD_DEEPBIND is a glibc extension; musl has no equivalent flag.
++    // canImport(Glibc) cannot tell the two apart here because the Swift overlay
++    // module is called Glibc on both, so fall back to 0 (dlopen's default
++    // binding), which is what every other non-glibc platform already uses.
+     public static let deepBind: _DLOpenFlags = _DLOpenFlags(rawValue: 0)
+   #endif
+   #endif
+-  #endif
+ 
+     public var rawValue: Int32
+ 
+--- a/swift-tools-support-core/Sources/TSCUtility/dlopen.swift
++++ b/swift-tools-support-core/Sources/TSCUtility/dlopen.swift
+@@ -67,7 +67,10 @@
+   #else
+     public static let first: DLOpenFlags = DLOpenFlags(rawValue: 0)
+   #if os(Linux) && canImport(Glibc)
+-    public static let deepBind: DLOpenFlags = DLOpenFlags(rawValue: RTLD_DEEPBIND)
++    // RTLD_DEEPBIND is a glibc extension; musl has no equivalent. The Swift
++    // overlay module is named Glibc on both, so canImport() cannot tell them
++    // apart -- fall back to 0, dlopen's default binding.
++    public static let deepBind: DLOpenFlags = DLOpenFlags(rawValue: 0)
+   #else
+     public static let deepBind: DLOpenFlags = DLOpenFlags(rawValue: 0)
+   #endif

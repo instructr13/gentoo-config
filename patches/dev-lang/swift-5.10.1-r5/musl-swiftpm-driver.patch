@@ -1,0 +1,31 @@
+# log to quote. Both are musl-specific.
+
+--- a/swift-driver/Sources/SwiftDriver/SwiftScan/Loader.swift
++++ b/swift-driver/Sources/SwiftDriver/SwiftScan/Loader.swift
+@@ -132,7 +132,10 @@
+       Loader.Flags(rawValue: 0)
+     }
+ 
+-#if os(Linux) && canImport(Glibc)
++// RTLD_DEEPBIND is a glibc extension with no musl equivalent, and
++// canImport(Glibc) cannot tell them apart because the Swift overlay module is
++// named Glibc on musl too. Use 0 -- dlopen's default binding.
++#if false
+     public static var deepBind: Loader.Flags {
+       Loader.Flags(rawValue: RTLD_DEEPBIND)
+     }
+--- a/swiftpm/Sources/Basics/Cancellator.swift
++++ b/swiftpm/Sources/Basics/Cancellator.swift
+@@ -81,7 +81,11 @@
+                 var action = sigaction()
+                 #if canImport(Darwin) || os(OpenBSD)
+                 action.__sigaction_u.__sa_handler = SIG_DFL
+-                #elseif canImport(Musl)
++                // canImport(Musl) is always false on Swift 5.10 (no MUSL SDK),
++                // so os(Linux) has to pick the musl spelling here: musl names
++                // the sigaction union member __sa_handler and only reaches
++                // sa_handler through a macro Swift cannot import.
++                #elseif canImport(Musl) || os(Linux)
+                 action.__sa_handler.sa_handler = SIG_DFL
+                 #elseif os(Android)
+                 action.sa_handler = SIG_DFL

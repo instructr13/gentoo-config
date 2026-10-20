@@ -1,0 +1,42 @@
+# C++ interop: the `std` Clang module cannot be built from libstdc++ headers
+# when SSE3 is on.
+#
+# Any -march= above the x86-64 baseline defines __SSE3__, which makes
+# libstdc++'s <random> pull in bits/opt_random.h -> <pmmintrin.h>. That reaches
+# Clang's _Builtin_intrinsics module, whose mm_malloc.h includes <stdlib.h>,
+# which under libstdc++ is a wrapper around <cstdlib> -- a header that belongs
+# to the `std` module currently being built:
+#
+#   stdlib.h:36:11: error: cyclic dependency in module 'std':
+#                          std -> _Builtin_intrinsics -> std
+#   std.swift:13:19: error: could not build C module 'std'
+#
+# Upstream never hits this because its CI builds with a generic -march; on
+# Gentoo, COMMON_FLAGS in make.conf routinely carries a real CPU target.
+#
+# Hiding __SSE3__ from the Clang importer (only for the C++ overlay, via the
+# existing SWIFT_SDK_*_CXX_OVERLAY_SWIFT_COMPILE_FLAGS hook) stops opt_random.h
+# from reaching the intrinsics. This changes only which declarations the `std`
+# module exposes; code generation for Swift sources is unaffected.
+#
+# Not musl-specific -- it would bite a glibc Gentoo system just the same.
+# Applies to both Swift 5.10.1 and 6.3.3.
+
+--- a/swift/cmake/modules/SwiftConfigureSDK.cmake
++++ b/swift/cmake/modules/SwiftConfigureSDK.cmake
+@@ -322,6 +322,15 @@
+   # depending on the architecture, so having a single value is the only
+   # possibility right now.
++  # -U__SSE3__: building the `std` Clang module out of libstdc++ headers is
++  # cyclic whenever SSE3 is enabled (any -march= above the x86-64 baseline):
++  #   <random> -> bits/opt_random.h -> <pmmintrin.h> -> _Builtin_intrinsics
++  #             -> mm_malloc.h -> <stdlib.h> -> <cstdlib> -> back into `std`
++  #   error: cyclic dependency in module 'std': std -> _Builtin_intrinsics -> std
++  # Upstream never sees this because its CI builds with a generic -march. Hiding
++  # __SSE3__ from the importer keeps opt_random.h from pulling the intrinsics in;
++  # it only affects which declarations the module exposes, not code generation.
+   set(SWIFT_SDK_${prefix}_CXX_OVERLAY_SWIFT_COMPILE_FLAGS
+       -Xcc --gcc-toolchain=/usr
++      -Xcc -U__SSE3__
+     CACHE STRING "Extra flags for compiling the C++ overlay")
+ 

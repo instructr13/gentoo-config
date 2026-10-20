@@ -1,0 +1,4 @@
+dev-haskell/text -simdutf # remove C++ depends to properly compile ghc
+gui-apps/noctalia -jemalloc # jemalloc requires glibc
+llvm-core/llvm binutils-plugin # mitigate missing LLVMgold.so caused by mold installation
+

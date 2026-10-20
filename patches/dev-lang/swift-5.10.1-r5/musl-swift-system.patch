@@ -1,0 +1,53 @@
+# Swift 5.10.1 only: swift-system on musl -- O_ACCMODE.
+#
+# glibc spells it as a plain literal (`#define O_ACCMODE 0003`), which the Clang
+# importer brings across as a Swift constant. musl spells it as an expression,
+# `#define O_ACCMODE (03|O_SEARCH)`, and the importer rejects that form:
+#
+#   Constants.swift:456:33: error: cannot find 'O_ACCMODE' in scope
+#   /usr/include/fcntl.h:43:9: note: macro 'O_ACCMODE' unavailable:
+#                                    structure not supported
+#
+# The values differ too -- musl folds O_SEARCH/O_PATH into the access mode, so
+# O_ACCMODE is 0o10000003 there rather than 0o3. Hardcoding either spelling in
+# Swift would be wrong on the other libc, so take the value from C through the
+# CSystem shim the module already imports. That is correct on every libc and
+# needs no libc detection.
+#
+# _O_ACCMODE loses @_alwaysEmitIntoClient because its value now comes from a
+# function rather than a macro; it is an internal helper, so no ABI impact.
+
+--- a/swift-system/Sources/CSystem/include/CSystemLinux.h
++++ b/swift-system/Sources/CSystem/include/CSystemLinux.h
+@@ -21,5 +21,11 @@
+ #include <pthread.h>
+ #include <sched.h>
+ #include <unistd.h>
++
++// glibc spells O_ACCMODE as a plain literal, which the Clang importer can bring
++// across. musl spells it `(03|O_SEARCH)`, an expression form the importer
++// rejects ("macro unavailable: structure not supported"). Expose the value
++// through C instead, which is correct on every libc.
++static inline int _swift_system_o_accmode(void) { return O_ACCMODE; }
+ #endif
+ 
+--- a/swift-system/Sources/System/Internals/Constants.swift
++++ b/swift-system/Sources/System/Internals/Constants.swift
+@@ -452,8 +452,15 @@
+ 
+ #if !os(Windows)
+ // TODO: API?
+-@_alwaysEmitIntoClient
+-internal var _O_ACCMODE: CInt { O_ACCMODE }
++// Not @_alwaysEmitIntoClient: the value comes from the CSystem shim because
++// musl's O_ACCMODE macro cannot be imported directly (see CSystemLinux.h).
++internal var _O_ACCMODE: CInt {
++#if os(Linux) || os(FreeBSD) || os(Android)
++  return _swift_system_o_accmode()
++#else
++  return O_ACCMODE
++#endif
++}
+ 
+ @_alwaysEmitIntoClient
+ internal var _O_NONBLOCK: CInt { O_NONBLOCK }

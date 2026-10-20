@@ -1,0 +1,8 @@
+app-alternatives/awk mawk -gawk 
+app-alternatives/cpio libarchive -gnu
+app-alternatives/gpg freepg -reference
+app-alternatives/gzip pigz -reference
+app-alternatives/tar libarchive -gnu
+
+app-crypt/freepg tools usb user-socket
+

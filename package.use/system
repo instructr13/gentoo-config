@@ -1,0 +1,22 @@
+app-admin/doas persist
+app-misc/localsearch exif upower
+
+dev-lang/python -bluetooth
+
+net-libs/libpcap netlink
+net-firewall/iptables conntrack netlink nftables pcap
+net-firewall/nftables python json xtables
+net-fs/samba client
+net-misc/networkmanager iwd
+
+sys-apps/systemd boot cryptsetup fido2 qrcode xkb
+sys-apps/systemd-utils kernel-install
+sys-apps/util-linux tty-helpers
+sys-fs/zfs modules-compress
+sys-kernel/cachyos-kernel -preempt_full preempt_lazy -kcfi # do not enable kCFI as ZFS is incompatible with this useflag
+sys-kernel/gentoo-kernel -debug modules-comporess
+sys-kernel/installkernel -systemd dracut
+sys-kernel/linux-firmware compress-zstd
+sys-libs/gcompat libucontext obstack
+sys-power/upower ios
+

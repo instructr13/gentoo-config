@@ -1,0 +1,5 @@
+dev-haskell/*
+dev-lang/ghc
+
+*/*::haskell
+

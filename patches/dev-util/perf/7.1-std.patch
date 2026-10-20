@@ -1,0 +1,5 @@
+--- a/tests/workloads/code_with_type.c
++++ b/tests/workloads/code_with_type.c
+@@ -0,0 +1 @@
++#include <sys/types.h>
+ 

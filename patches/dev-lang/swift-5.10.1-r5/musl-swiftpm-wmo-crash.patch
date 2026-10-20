@@ -1,0 +1,36 @@
+# Swift 5.10.1 only: swift-frontend crashes building SwiftPM with -O + WMO.
+#
+# While emitting IR for TSCUtility the frontend faults:
+#
+#   <unknown>:0: error: compile command failed due to signal 11
+#
+# The driver reports nothing useful and llbuild swallows the output, so the
+# bootstrap just exits 1 in silence. Symbolizing the faulting address against
+# swift-frontend points at:
+#
+#   swift::TypeDecl::compare(swift::TypeDecl const*, swift::TypeDecl const*)
+#
+# Narrowing by compilation stage shows -typecheck, -emit-sil and -emit-module
+# all succeed and only -emit-ir faults, i.e. it is an IRGen bug reached through
+# whole-module optimization. -Onone also avoids it, but dropping just WMO keeps
+# -O for the resulting tools and is the smaller change.
+#
+# SwiftPM is a build tool, so per-file optimization is a fine trade here.
+
+--- a/swiftpm/Utilities/bootstrap
++++ b/swiftpm/Utilities/bootstrap
+@@ -653,6 +653,14 @@
+     if integrated_swift_driver:
+         swiftpm_args.append("--use-integrated-swift-driver")
+ 
++    # swift-frontend 5.10.1 crashes in IRGen (swift::TypeDecl::compare) while
++    # emitting TSCUtility with -O plus whole-module optimization:
++    #   error: compile command failed due to signal 11
++    # Type checking, SILGen and -emit-module all succeed; only the WMO IRGen
++    # path faults. Building per-file keeps -O and just drops WMO, which is the
++    # narrowest workaround (-Onone also avoids it, but costs more).
++    swiftpm_args += ["-Xswiftc", "-no-whole-module-optimization"]
++
+     # Build SwiftPM, including libSwiftPM, all the command line tools, and the current variant of PackageDescription.
+     call_swiftpm(args, swiftpm_args)
+ 

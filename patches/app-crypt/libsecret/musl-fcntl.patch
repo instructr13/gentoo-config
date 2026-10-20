@@ -1,0 +1,21 @@
+secret-file-collection.c: include <fcntl.h> for open()/O_CREAT/O_RDWR
+
+The lock-file support added in 0.21.8 calls g_open() (a macro for open())
+with O_CREAT | O_RDWR, but only includes <sys/file.h>. glibc's
+<sys/file.h> pulls in <fcntl.h> transitively; musl's declares flock()
+and nothing else, so on musl the build fails with:
+
+  error: call to undeclared function 'open'
+  error: use of undeclared identifier 'O_CREAT'
+  error: use of undeclared identifier 'O_RDWR'
+
+--- a/libsecret/secret-file-collection.c
++++ b/libsecret/secret-file-collection.c
+@@ -23,6 +23,7 @@
+ 
+ #include <sys/file.h>
+ #include <errno.h>
++#include <fcntl.h>
+ 
+ EGG_SECURE_DECLARE (secret_file_collection);
+ 

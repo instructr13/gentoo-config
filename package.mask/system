@@ -1,0 +1,5 @@
+# Avoid installing unused kernels
+sys-kernel/cachyos-kernel-bin
+sys-kernel/gentoo-kernel*
+sys-kernel/vanilla-kernel*
+

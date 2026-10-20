@@ -1,0 +1,17 @@
+--- a/llvm/include/llvm/CodeGen/RDFRegisters.h
++++ b/llvm/include/llvm/CodeGen/RDFRegisters.h
+@@ -366,6 +366,14 @@
+   const llvm::rdf::PhysicalRegisterInfo *PRI;
+ };
+ 
++#if defined(_LIBCPP_VERSION) && __has_include(<__type_traits/make_transparent.h>)
++template <>
++struct __make_transparent<llvm::rdf::RegisterRef,
++                          less<llvm::rdf::RegisterRef>> {
++  using type = less<llvm::rdf::RegisterRef>;
++};
++#endif
++
+ } // namespace std
+ 
+ namespace llvm::rdf {

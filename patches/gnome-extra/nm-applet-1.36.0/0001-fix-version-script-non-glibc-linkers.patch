@@ -1,0 +1,9 @@
+--- a/linker-script-binary.ver
++++ b/linker-script-binary.ver
+@@ -1,6 +1,4 @@
+ {
+-global:
+-	_IO_stdin_used;
+ local:
+ 	*;
+ };

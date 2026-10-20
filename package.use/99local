@@ -1,0 +1,6 @@
+# local useflags
+*/* dist-kernel networkmanager
+
+gnome-base/gnome-control-center -bluetooth -geolocation -ibus
+gnome-base/gnome-settings-daemon -colord
+dev-lang/swift libcxx -llvm_slot_22 llvm_slot_23

@@ -1,0 +1,4 @@
+# Limit jobs on specific package builds to avoid OOM (usually Rust projects)
+
+dev-util/mise j2.conf
+
