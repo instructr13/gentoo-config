@@ -5,6 +5,7 @@ dev-debug/gdb multitarget
 dev-lang/ghc ghcbootstrap
 dev-util/perf tcmalloc
 dev-lang/ruby gmp jit
+dev-lang/rust mrustc-bootstrap
 dev-lang/swift libcxx
 dev-lang/swift-bootstrap -binary
 llvm-runtimes/libunwind -debug
